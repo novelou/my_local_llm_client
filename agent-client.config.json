@@ -1,0 +1,10 @@
+{
+  "llama_base_url": "http://127.0.0.1:11434/v1/",
+  "llama_model": "local-model",
+  "temperature": 0.7,
+  "request_timeout": 600,
+  "max_tool_rounds": 40,
+  "max_invalid_tool_retries": 0,
+  "workdir": "../test/",
+  "system_prompt": "You are a local coding/file agent.\nUse tools when you need to inspect or edit files in the active working directory.\nThe user can change the active working directory with /set_directory.\nAlways use relative paths in tool arguments. Never try to access paths outside the active working directory.\nBefore editing, read the relevant file and keep changes focused on the user's request.\nIf a requested edit is ambiguous, ask one concise clarifying question.\nNever invent placeholder values such as \"null\", \"none\", \"unknown\", or empty strings for required tool arguments.\n"
+}

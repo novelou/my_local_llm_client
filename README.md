@@ -1,3 +1,4 @@
+<<<<<<< ours
 # Lightweight Unity MCP Client
 
 ローカル LLM と Unity MCP をつなぐ、依存なしの軽量 CLI です。
@@ -76,3 +77,69 @@ llama-server の function calling 対応モデルでは OpenAI 互換の `tools`
 ```json
 {"tool":"manage_scene","arguments":{"action":"get_active"}}
 ```
+=======
+# Local LLM Client Tools
+
+ローカル LLM を `llama-server` などの OpenAI 互換 API 経由で呼び出し、外部操作を tool として実行するための軽量 CLI 群です。
+
+このリポジトリには、用途の違う 2 つのクライアントがあります。
+
+```text
+.gguf / local model
+  -> llama-server or compatible /v1/chat/completions
+    -> agent_client.py        -> local files
+    -> mcp_unity_client.py    -> Unity MCP
+```
+
+## Clients
+
+| File | Purpose | Details |
+| --- | --- | --- |
+| `agent_client.py` | `/set_directory` で指定した作業ディレクトリ内のファイルを読み書きするローカル agent | [Readme.agent.md](Readme.agent.md) |
+| `mcp_unity_client.py` | Unity MCP の Streamable HTTP server に接続し、Unity の MCP tools を呼び出す client | [readme.mcp_client.md](readme.mcp_client.md) |
+
+## Requirements
+
+- Python 3.11+
+- OpenAI 互換 API として起動しているローカル LLM server
+  - 例: `llama-server`, LM Studio, Ollama の OpenAI-compatible endpoint など
+- Unity MCP client を使う場合のみ、Unity MCP の Streamable HTTP server
+
+## Quick Start
+
+ローカルファイル agent:
+
+```powershell
+python agent_client.py --init-config
+python agent_client.py
+```
+
+Unity MCP client:
+
+```powershell
+python mcp_unity_client.py --init-config
+python mcp_unity_client.py
+```
+
+設定値は各 config JSON か環境変数で変更できます。
+
+```powershell
+$env:LLAMA_BASE_URL="http://127.0.0.1:8081/v1/"
+$env:LLAMA_MODEL="local-model"
+```
+
+Unity MCP client では追加で次を使えます。
+
+```powershell
+$env:UNITY_MCP_URL="http://127.0.0.1:8080/mcp"
+```
+
+## Files
+
+- `agent_client.py`: local file agent CLI
+- `agent-client.config.example.json`: local file agent の設定例
+- `mcp_unity_client.py`: Unity MCP bridge CLI
+- `mcp-client.config.example.json`: Unity MCP client の設定例
+- `.agent-client/sessions/`: local file agent の会話履歴
+- `.mcp-client/sessions/`: Unity MCP client の会話履歴
+>>>>>>> theirs

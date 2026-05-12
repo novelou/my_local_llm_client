@@ -30,6 +30,7 @@ When you call tools, choose the smallest useful action and explain the result br
 If a requested Unity operation is ambiguous, ask one concise clarifying question.
 Never invent placeholder values such as "null", "none", "unknown", or empty strings for required tool arguments.
 If you do not know a required argument, ask the user instead of calling a tool.
+For execute_code, the submitted C# snippet must return a value on every path.
 """
 
 
@@ -41,7 +42,6 @@ class Config:
     temperature: float = 0.2
     request_timeout: int = 120
     max_tool_rounds: int = 8
-    max_invalid_tool_retries: int = 0
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -355,27 +355,45 @@ JSON_STRING_LITERAL_FIELDS = {
 }
 
 
-def normalize_tool_arguments(arguments: Any, tool_name: str | None = None) -> Any:
-    return normalize_value(arguments, tool_name, None)
+def normalize_tool_arguments(arguments: Any, tool_name: str | None = None, schema: dict[str, Any] | None = None) -> Any:
+    return normalize_value(arguments, tool_name, None, schema, schema)
 
 
-def normalize_value(value: Any, tool_name: str | None, key: str | None) -> Any:
+def normalize_value(
+    value: Any,
+    tool_name: str | None,
+    key: str | None,
+    schema: dict[str, Any] | None,
+    root_schema: dict[str, Any] | None,
+) -> Any:
     if (tool_name, key) in JSON_STRING_LITERAL_FIELDS:
         return unwrap_json_string_literal(value)
     if key in CODE_STRING_KEYS or (tool_name, key) in RAW_JSON_STRING_FIELDS:
         return value
     if isinstance(value, dict):
-        return {child_key: normalize_value(child_value, tool_name, child_key) for child_key, child_value in value.items()}
+        return {
+            child_key: normalize_value(
+                child_value,
+                tool_name,
+                child_key,
+                property_schema(schema, child_key, root_schema),
+                root_schema,
+            )
+            for child_key, child_value in value.items()
+        }
     if isinstance(value, list):
-        return [normalize_value(child_value, tool_name, key) for child_value in value]
+        item_schema = array_item_schema(schema, root_schema)
+        return [normalize_value(child_value, tool_name, key, item_schema, root_schema) for child_value in value]
     if isinstance(value, str):
+        if schema_allows_string(schema, root_schema):
+            return value
         text = value.strip()
         if looks_json_encoded(text):
             try:
                 parsed = json.loads(text)
             except json.JSONDecodeError:
                 return value
-            return normalize_value(parsed, tool_name, key)
+            return normalize_value(parsed, tool_name, key, schema, root_schema)
     return value
 
 
@@ -478,43 +496,93 @@ def number_from_text(value: str) -> float | int:
     return int(number) if number.is_integer() else number
 
 
-def allowed_values_for_property(schema: dict[str, Any], property_name: str) -> list[Any] | None:
-    for candidate in schema_candidates(schema):
+def property_schema(schema: Any, property_name: str, root_schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    root = root_schema if root_schema is not None else schema
+    for candidate in schema_candidates(schema, root):
         properties = candidate.get("properties")
         if not isinstance(properties, dict) or property_name not in properties:
             continue
-        property_schema = properties[property_name]
-        values = literal_values(property_schema)
+        return resolve_ref(properties[property_name], root)
+    for found in deep_property_schemas(schema, property_name, root):
+        return found
+    return None
+
+
+def allowed_values_for_property(schema: dict[str, Any], property_name: str) -> list[Any] | None:
+    prop_schema = property_schema(schema, property_name, schema)
+    if prop_schema is not None:
+        values = literal_values(prop_schema, schema)
         if values is not None:
             return values
     return None
 
 
-def schema_candidates(schema: Any) -> list[dict[str, Any]]:
+def schema_candidates(schema: Any, root_schema: Any | None = None) -> list[dict[str, Any]]:
     if not isinstance(schema, dict):
         return []
-    candidates = [schema]
+    root = root_schema if root_schema is not None else schema
+    resolved = resolve_ref(schema, root)
+    if not isinstance(resolved, dict):
+        return []
+    candidates = [resolved]
     for key in ("allOf", "anyOf", "oneOf"):
-        items = schema.get(key)
+        items = resolved.get(key)
         if isinstance(items, list):
             for item in items:
-                candidates.extend(schema_candidates(item))
+                candidates.extend(schema_candidates(item, root))
     return candidates
 
 
-def literal_values(schema: Any) -> list[Any] | None:
+def resolve_ref(schema: Any, root_schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return schema
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return schema
+    current = root_schema
+    for part in ref[2:].split("/"):
+        if not isinstance(current, dict):
+            return schema
+        current = current.get(part)
+    if isinstance(current, dict):
+        merged = dict(current)
+        merged.update({key: value for key, value in schema.items() if key != "$ref"})
+        return merged
+    return schema
+
+
+def deep_property_schemas(schema: Any, property_name: str, root_schema: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if isinstance(schema, dict):
+        resolved = resolve_ref(schema, root_schema)
+        properties = resolved.get("properties") if isinstance(resolved, dict) else None
+        if isinstance(properties, dict) and property_name in properties:
+            prop = resolve_ref(properties[property_name], root_schema)
+            if isinstance(prop, dict):
+                found.append(prop)
+        for value in resolved.values() if isinstance(resolved, dict) else []:
+            found.extend(deep_property_schemas(value, property_name, root_schema))
+    elif isinstance(schema, list):
+        for item in schema:
+            found.extend(deep_property_schemas(item, property_name, root_schema))
+    return found
+
+
+def literal_values(schema: Any, root_schema: Any | None = None) -> list[Any] | None:
     if not isinstance(schema, dict):
         return None
-    if "enum" in schema and isinstance(schema["enum"], list):
-        return schema["enum"]
-    if "const" in schema:
-        return [schema["const"]]
+    root = root_schema if root_schema is not None else schema
+    resolved = resolve_ref(schema, root)
+    if "enum" in resolved and isinstance(resolved["enum"], list):
+        return resolved["enum"]
+    if "const" in resolved:
+        return [resolved["const"]]
     for key in ("allOf", "anyOf", "oneOf"):
-        items = schema.get(key)
+        items = resolved.get(key)
         if isinstance(items, list):
             values: list[Any] = []
             for item in items:
-                nested = literal_values(item)
+                nested = literal_values(item, root)
                 if nested:
                     values.extend(nested)
             if values:
@@ -522,11 +590,88 @@ def literal_values(schema: Any) -> list[Any] | None:
     return None
 
 
+def array_item_schema(schema: Any, root_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(schema, dict):
+        return None
+    root = root_schema if root_schema is not None else schema
+    for candidate in schema_candidates(schema, root):
+        items = candidate.get("items")
+        if isinstance(items, dict):
+            return resolve_ref(items, root)
+    return None
+
+
+def schema_types(schema: Any, root_schema: Any | None = None) -> set[str]:
+    if not isinstance(schema, dict):
+        return set()
+    root = root_schema if root_schema is not None else schema
+    types: set[str] = set()
+    for candidate in schema_candidates(schema, root):
+        value = candidate.get("type")
+        if isinstance(value, str):
+            types.add(value)
+        elif isinstance(value, list):
+            types.update(item for item in value if isinstance(item, str))
+    return types
+
+
+def schema_allows_string(schema: Any, root_schema: Any | None = None) -> bool:
+    return "string" in schema_types(schema, root_schema)
+
+
+def value_matches_schema_type(value: Any, schema: Any, root_schema: Any | None = None) -> bool:
+    types = schema_types(schema, root_schema)
+    if not types:
+        return True
+    return any(value_matches_json_type(value, json_type) for json_type in types)
+
+
+def value_matches_json_type(value: Any, json_type: str) -> bool:
+    if json_type == "string":
+        return isinstance(value, str)
+    if json_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if json_type == "number":
+        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+    if json_type == "boolean":
+        return isinstance(value, bool)
+    if json_type == "array":
+        return isinstance(value, list)
+    if json_type == "object":
+        return isinstance(value, dict)
+    if json_type == "null":
+        return value is None
+    return True
+
+
+def describe_schema_types(schema: Any, root_schema: Any | None = None) -> str:
+    types = sorted(schema_types(schema, root_schema))
+    return " or ".join(types) if types else "a valid JSON value"
+
+
+def repair_execute_code_arguments(arguments: Any) -> tuple[Any, str | None]:
+    if not isinstance(arguments, dict):
+        return arguments, None
+    code = arguments.get("code")
+    if not isinstance(code, str) or re.search(r"\breturn\b", code):
+        return arguments, None
+    repaired = dict(arguments)
+    repaired["code"] = code.rstrip() + '\nreturn "OK";'
+    return repaired, "appended return value for execute_code"
+
+
 class ToolValidator:
     BAD_PLACEHOLDERS = {"null", "none", "unknown", "undefined", "n/a", ""}
 
     def __init__(self, mcp_tools: list[dict[str, Any]]) -> None:
         self.tools = {tool.get("name"): tool for tool in mcp_tools if tool.get("name")}
+
+    def schema_for(self, name: str | None) -> dict[str, Any]:
+        if not isinstance(name, str):
+            return {}
+        tool = self.tools.get(name) or {}
+        schema = tool.get("inputSchema") or {}
+        return schema if isinstance(schema, dict) else {}
 
     def validate(self, name: str | None, arguments: Any) -> str | None:
         if not isinstance(name, str) or not name:
@@ -538,8 +683,12 @@ class ToolValidator:
         if not isinstance(arguments, dict):
             return f"Arguments for tool '{name}' must be a JSON object."
 
-        schema = tool.get("inputSchema") or {}
+        schema = self.schema_for(name)
+        missing_required = self.missing_required_arguments(schema, arguments)
+        if missing_required:
+            return f"Missing required argument(s) for tool '{name}': {', '.join(missing_required)}."
         for key, value in arguments.items():
+            prop_schema = property_schema(schema, key, schema)
             if key == "action":
                 if is_missing_value(value):
                     allowed = allowed_values_for_property(schema, key)
@@ -556,6 +705,11 @@ class ToolValidator:
                     f"Invalid placeholder value for {name}.{key}: {value!r}."
                     f"{suffix} Ask the user if the correct value is unknown."
                 )
+            if prop_schema is not None and not value_matches_schema_type(value, prop_schema, schema):
+                return (
+                    f"Invalid type for {name}.{key}: got {type(value).__name__}, "
+                    f"expected {describe_schema_types(prop_schema, schema)}."
+                )
             allowed = allowed_values_for_property(schema, key)
             if allowed is not None and value not in allowed:
                 return (
@@ -563,6 +717,17 @@ class ToolValidator:
                     f" Allowed values: {compact_json(allowed)}."
                 )
         return None
+
+    def missing_required_arguments(self, schema: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
+        missing: list[str] = []
+        for candidate in schema_candidates(schema, schema):
+            required = candidate.get("required")
+            if not isinstance(required, list):
+                continue
+            for key in required:
+                if isinstance(key, str) and key not in arguments:
+                    missing.append(key)
+        return sorted(set(missing))
 
 
 def print_help() -> None:
@@ -637,6 +802,7 @@ class CliApp:
 
     def run_turn(self) -> None:
         invalid_tool_calls: dict[str, int] = {}
+        execute_code_failures = 0
         user_text = last_user_text(self.messages)
         for _ in range(self.config.max_tool_rounds):
             try:
@@ -657,11 +823,14 @@ class CliApp:
                     args_text = function.get("arguments") or "{}"
                     arguments = json.loads(args_text) if isinstance(args_text, str) else args_text
                     original_arguments = arguments
-                    arguments = normalize_tool_arguments(arguments, name)
+                    arguments = normalize_tool_arguments(arguments, name, self.validator.schema_for(name))
+                    arguments, execute_repair_note = repair_execute_code_arguments(arguments)
                     arguments, repair_note = repair_tool_call_from_user_text(name, arguments, user_text)
                     print(f"tool> {name} {json.dumps(arguments, ensure_ascii=False)}")
                     if arguments != original_arguments:
                         print(f"tool normalized> {json.dumps(original_arguments, ensure_ascii=False)} -> {json.dumps(arguments, ensure_ascii=False)}")
+                    if execute_repair_note:
+                        print(f"tool repaired> {execute_repair_note}")
                     if repair_note:
                         print(f"tool repaired> {repair_note}")
                     validation_error = self.validator.validate(name, arguments)
@@ -674,14 +843,14 @@ class CliApp:
                                 "role": "tool",
                                 "tool_call_id": tool_call.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                                 "name": name or "invalid_tool",
-                                "content": self.validation_feedback(validation_error),
+                                "content": self.validation_feedback(validation_error, invalid_tool_calls[signature]),
                             }
                         )
-                        if invalid_tool_calls[signature] > self.config.max_invalid_tool_retries:
-                            self.stop_repeated_invalid_tool_call(validation_error)
-                            return
                         continue
-                    result = self.mcp.call_tool(name, arguments)
+                    try:
+                        result = self.mcp.call_tool(name, arguments)
+                    except Exception as exc:
+                        result = {"success": False, "message": str(exc), "error": type(exc).__name__}
                     print(f"tool result> {summarize_tool_result(result)}")
                     self.messages.append(
                         {
@@ -692,8 +861,13 @@ class CliApp:
                         }
                     )
                     if name == "execute_code" and is_tool_result_failure(result):
-                        self.stop_failed_execute_code(result)
-                        return
+                        execute_code_failures += 1
+                        self.messages.append(
+                            {
+                                "role": "user",
+                                "content": self.execute_code_failure_feedback(result, execute_code_failures),
+                            }
+                        )
                 continue
 
             content = message.get("content") or ""
@@ -701,12 +875,15 @@ class CliApp:
             if fallback:
                 name, arguments = fallback
                 original_arguments = arguments
-                arguments = normalize_tool_arguments(arguments, name)
+                arguments = normalize_tool_arguments(arguments, name, self.validator.schema_for(name))
+                arguments, execute_repair_note = repair_execute_code_arguments(arguments)
                 arguments, repair_note = repair_tool_call_from_user_text(name, arguments, user_text)
                 self.messages.append({"role": "assistant", "content": content})
                 print(f"tool> {name} {json.dumps(arguments, ensure_ascii=False)}")
                 if arguments != original_arguments:
                     print(f"tool normalized> {json.dumps(original_arguments, ensure_ascii=False)} -> {json.dumps(arguments, ensure_ascii=False)}")
+                if execute_repair_note:
+                    print(f"tool repaired> {execute_repair_note}")
                 if repair_note:
                     print(f"tool repaired> {repair_note}")
                 validation_error = self.validator.validate(name, arguments)
@@ -717,14 +894,14 @@ class CliApp:
                     self.messages.append(
                         {
                             "role": "user",
-                            "content": self.validation_feedback(validation_error),
+                            "content": self.validation_feedback(validation_error, invalid_tool_calls[signature]),
                         }
                     )
-                    if invalid_tool_calls[signature] > self.config.max_invalid_tool_retries:
-                        self.stop_repeated_invalid_tool_call(validation_error)
-                        return
                     continue
-                result = self.mcp.call_tool(name, arguments)
+                try:
+                    result = self.mcp.call_tool(name, arguments)
+                except Exception as exc:
+                    result = {"success": False, "message": str(exc), "error": type(exc).__name__}
                 print(f"tool result> {summarize_tool_result(result)}")
                 self.messages.append(
                     {
@@ -733,42 +910,48 @@ class CliApp:
                     }
                 )
                 if name == "execute_code" and is_tool_result_failure(result):
-                    self.stop_failed_execute_code(result)
-                    return
+                    execute_code_failures += 1
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": self.execute_code_failure_feedback(result, execute_code_failures),
+                        }
+                    )
                 continue
 
             self.messages.append({"role": "assistant", "content": content})
             print(f"\nassistant> {content}")
             return
-        print("assistant> Tool loop limit reached. Try narrowing the request.")
+        content = (
+            "Tool loop limit reached. I returned the latest tool errors/results to the model, "
+            "but it did not finish within max_tool_rounds. Try increasing max_tool_rounds or narrowing the request."
+        )
+        self.messages.append({"role": "assistant", "content": content})
+        print(f"assistant> {content}")
 
-    def validation_feedback(self, validation_error: str) -> str:
+    def validation_feedback(self, validation_error: str, repeat_count: int = 1) -> str:
+        repeat_note = (
+            f"\nThis exact invalid tool call has appeared {repeat_count} times. "
+            "Change the tool, action, or argument types before trying again."
+            if repeat_count > 1
+            else ""
+        )
         return (
             "Tool call rejected before execution.\n"
             f"{validation_error}\n"
             "Do not repeat the same rejected tool call. Choose a valid argument value, "
             "or ask the user one concise clarifying question."
+            f"{repeat_note}"
         )
 
-
-    def stop_repeated_invalid_tool_call(self, validation_error: str) -> None:
-        content = (
-            "The invalid tool call was not sent to Unity MCP, so this turn is stopping.\n"
-            f"{validation_error}\n"
-            "Please make the Unity operation more specific before trying again."
-        )
-        self.messages.append({"role": "assistant", "content": content})
-        print(f"\nassistant> {content}")
-
-    def stop_failed_execute_code(self, result: Any) -> None:
-        content = (
-            "The execute_code tool returned a failure, so I am stopping instead of "
-            "retrying the same code.\n"
+    def execute_code_failure_feedback(self, result: Any, failure_count: int = 1) -> str:
+        return (
+            "The execute_code tool failed. Do not repeat the same code.\n"
+            "Inspect the error, fix the snippet, and continue with the smallest useful next tool call.\n"
+            f"execute_code failure count this turn: {failure_count}.\n"
             "Tool result:\n"
             f"{summarize_tool_result(result)}"
         )
-        self.messages.append({"role": "assistant", "content": content})
-        print(f"\nassistant> {content}")
 
     def fallback_tool_prompt(self) -> str:
         lines = [
@@ -820,6 +1003,12 @@ class CliApp:
             print("Usage: /call NAME {json}")
             return
         arguments = json.loads(args_text) if args_text.strip() else {}
+        arguments = normalize_tool_arguments(arguments, tool_name, self.validator.schema_for(tool_name))
+        arguments, _ = repair_execute_code_arguments(arguments)
+        validation_error = self.validator.validate(tool_name, arguments)
+        if validation_error:
+            print(f"tool validation> {validation_error}")
+            return
         result = self.mcp.call_tool(tool_name, arguments)
         print(tool_result_to_text(result))
 
@@ -840,7 +1029,6 @@ def create_default_config(path: Path) -> None:
                 "temperature": 0.2,
                 "request_timeout": 120,
                 "max_tool_rounds": 8,
-                "max_invalid_tool_retries": 0,
                 "system_prompt": DEFAULT_SYSTEM_PROMPT,
             },
             ensure_ascii=False,
@@ -878,6 +1066,14 @@ def main() -> int:
                 print(f"- {tool.get('name')}: {tool.get('description', '')}")
             return 0
         arguments = parse_cli_arguments(args.arguments)
+        tools = mcp.list_tools()
+        validator = ToolValidator(tools)
+        arguments = normalize_tool_arguments(arguments, args.call_tool, validator.schema_for(args.call_tool))
+        arguments, _ = repair_execute_code_arguments(arguments)
+        validation_error = validator.validate(args.call_tool, arguments)
+        if validation_error:
+            print(f"tool validation> {validation_error}")
+            return 1
         print(tool_result_to_text(mcp.call_tool(args.call_tool, arguments)))
         return 0
 
