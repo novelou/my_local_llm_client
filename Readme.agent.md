@@ -70,6 +70,7 @@ python agent_client.py --set-directory F:\path\to\project
 
 ```text
 /help                         Show help
+/multiline                    Enter a multi-line prompt; finish with a line containing only .
 /set_directory PATH           Set the active working directory
 /pwd                          Show the active working directory
 /tools                        List local file tools
@@ -88,12 +89,17 @@ LLM が使える local tools は次の通りです。すべての path は activ
 | Tool | Description |
 | --- | --- |
 | `list_files` | ファイルとディレクトリを一覧表示 |
+| `search_files` | ファイル名・ディレクトリ名を検索 |
+| `search_text` | UTF-8 テキストファイル内の文字列を検索 |
 | `read_file` | UTF-8 テキストファイルを読み込み |
 | `write_file` | UTF-8 テキストファイルを作成または上書き |
 | `replace_text` | ファイル内の完全一致テキストを置換 |
 | `append_file` | ファイル末尾にテキストを追記 |
 | `delete_file` | ファイルを 1 つ削除 |
 | `make_directory` | ディレクトリを作成 |
+
+複数行の依頼を送る場合は `/multiline` を入力し、本文の最後に `.` だけの行を入力します。
+`search_text` の `query` は部分一致です。`file_pattern` は `*.tjs` のようなファイル名 glob、または `system/AnimationLayer.tjs` のような相対パスで指定できます。
 
 ## Direct Tool Calls
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
@@ -22,7 +23,6 @@ from typing import Any
 from mcp_unity_client import (
     LlamaClient,
     SessionStore,
-    compact_json,
     normalize_tool_arguments,
     parse_json_tool_request,
     summarize_tool_result,
@@ -36,6 +36,7 @@ Use tools when you need to inspect or edit files in the active working directory
 The user can change the active working directory with /set_directory.
 Always use relative paths in tool arguments. Never try to access paths outside the active working directory.
 Before editing, read the relevant file and keep changes focused on the user's request.
+If a file was already returned by read_file in this session, use that prior result unless you need fresh on-disk content.
 If a requested edit is ambiguous, ask one concise clarifying question.
 Never invent placeholder values such as "null", "none", "unknown", or empty strings for required tool arguments.
 """
@@ -66,6 +67,13 @@ class Config:
         return config
 
 
+@dataclass(frozen=True)
+class FileCacheEntry:
+    mtime_ns: int
+    size: int
+    text: str
+
+
 def env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value if value else default
@@ -81,6 +89,7 @@ def print_help() -> None:
             """
             Commands:
               /help                         Show this help
+              /multiline                    Enter a multi-line prompt; finish with a line containing only .
               /set_directory PATH           Set the active working directory
               /pwd                          Show the active working directory
               /tools                        List local file tools
@@ -143,6 +152,7 @@ def to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 class LocalFileTools:
     def __init__(self, workdir: Path) -> None:
+        self.read_cache: dict[tuple[str, int | None, int | None], FileCacheEntry] = {}
         self.workdir = self.set_workdir(workdir)
 
     def set_workdir(self, workdir: Path) -> Path:
@@ -152,6 +162,7 @@ class LocalFileTools:
         if not resolved.is_dir():
             raise ValueError(f"Path is not a directory: {resolved}")
         self.workdir = resolved
+        self.read_cache.clear()
         return resolved
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -169,6 +180,41 @@ class LocalFileTools:
                 },
             },
             {
+                "name": "search_files",
+                "description": "Search file and directory names under the active working directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative directory path. Defaults to ."},
+                        "pattern": {
+                            "type": "string",
+                            "description": "Case-insensitive substring or glob pattern, such as *.py.",
+                        },
+                        "recursive": {"type": "boolean", "description": "Whether to include nested files."},
+                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+            {
+                "name": "search_text",
+                "description": "Search UTF-8 text files for a string and return path:line matches.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Text to search for."},
+                        "path": {"type": "string", "description": "Relative directory or file path. Defaults to ."},
+                        "file_pattern": {
+                            "type": "string",
+                            "description": "Optional file name or relative-path glob to search, such as *.py or system/*.tjs.",
+                        },
+                        "case_sensitive": {"type": "boolean", "description": "Whether matching is case-sensitive."},
+                        "max_matches": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
                 "name": "read_file",
                 "description": "Read a UTF-8 text file from the active working directory.",
                 "inputSchema": {
@@ -177,6 +223,10 @@ class LocalFileTools:
                         "path": {"type": "string", "description": "Relative file path."},
                         "start_line": {"type": "integer", "minimum": 1},
                         "line_count": {"type": "integer", "minimum": 1, "maximum": 2000},
+                        "force_reload": {
+                            "type": "boolean",
+                            "description": "Set true only when the latest on-disk content must be re-read.",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -248,6 +298,10 @@ class LocalFileTools:
         try:
             if name == "list_files":
                 return self._ok(self.list_filesystem(args))
+            if name == "search_files":
+                return self._ok(self.search_files(args))
+            if name == "search_text":
+                return self._ok(self.search_text(args))
             if name == "read_file":
                 return self._ok(self.read_file(args))
             if name == "write_file":
@@ -280,26 +334,97 @@ class LocalFileTools:
                 break
         return "\n".join(entries) if entries else "<empty>"
 
+    def search_files(self, args: dict[str, Any]) -> str:
+        root = self.resolve_path(str(args.get("path") or "."), must_exist=True)
+        if not root.is_dir():
+            raise ValueError(f"Not a directory: {self.relative(root)}")
+        pattern = required_string(args, "pattern")
+        recursive = bool(args.get("recursive", True))
+        max_entries = int(args.get("max_entries") or 200)
+        iterator = root.rglob("*") if recursive else root.iterdir()
+        matches: list[str] = []
+        for item in sorted(iterator, key=lambda p: self.relative(p).lower()):
+            relative = self.relative(item)
+            name = item.name
+            if self.matches_pattern(name, pattern) or self.matches_pattern(relative, pattern):
+                suffix = "/" if item.is_dir() else ""
+                matches.append(f"{relative}{suffix}")
+                if len(matches) >= max_entries:
+                    matches.append("... <truncated>")
+                    break
+        return "\n".join(matches) if matches else "<no matches>"
+
+    def search_text(self, args: dict[str, Any]) -> str:
+        query = required_string(args, "query")
+        root = self.resolve_path(str(args.get("path") or "."), must_exist=True)
+        file_pattern = str(args.get("file_pattern") or "*")
+        case_sensitive = bool(args.get("case_sensitive", False))
+        max_matches = int(args.get("max_matches") or 200)
+        needle = query if case_sensitive else query.lower()
+        candidates = [root] if root.is_file() else sorted(root.rglob("*"), key=lambda p: self.relative(p).lower())
+        matches: list[str] = []
+        for path in candidates:
+            relative = self.relative(path)
+            if not path.is_file() or not (
+                self.matches_pattern(path.name, file_pattern) or self.matches_pattern(relative, file_pattern)
+            ):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line_number, line in enumerate(text.splitlines(), 1):
+                haystack = line if case_sensitive else line.lower()
+                if needle in haystack:
+                    snippet = line.strip()
+                    matches.append(f"{relative}:{line_number}: {snippet}")
+                    if len(matches) >= max_matches:
+                        matches.append("... <truncated>")
+                        return "\n".join(matches)
+        return "\n".join(matches) if matches else "<no matches>"
+
     def read_file(self, args: dict[str, Any]) -> str:
         path = self.resolve_path(required_string(args, "path"), must_exist=True)
         if not path.is_file():
             raise ValueError(f"Not a file: {self.relative(path)}")
-        text = path.read_text(encoding="utf-8")
         start_line = args.get("start_line")
         line_count = args.get("line_count")
+        normalized_start = max(int(start_line or 1), 1) if start_line is not None or line_count is not None else None
+        normalized_count = int(line_count or 200) if start_line is not None or line_count is not None else None
+        stat = path.stat()
+        cache_key = (str(path), normalized_start, normalized_count)
+        cache_entry = self.read_cache.get(cache_key)
+        if (
+            not bool(args.get("force_reload", False))
+            and cache_entry
+            and cache_entry.mtime_ns == stat.st_mtime_ns
+            and cache_entry.size == stat.st_size
+        ):
+            return (
+                f"Cache hit for {self.relative(path)}"
+                f"{self.format_cached_range(normalized_start, normalized_count)}. "
+                "Content was already returned earlier in this session; use the previous tool result. "
+                "Set force_reload=true if you need to read the file again."
+            )
+
+        text = path.read_text(encoding="utf-8")
         if start_line is None and line_count is None:
+            self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, text)
             return text
         lines = text.splitlines()
-        start = max(int(start_line or 1), 1) - 1
-        end = start + int(line_count or 200)
+        start = (normalized_start or 1) - 1
+        end = start + (normalized_count or 200)
         numbered = [f"{index + 1}: {line}" for index, line in enumerate(lines[start:end], start)]
-        return "\n".join(numbered)
+        result = "\n".join(numbered)
+        self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, result)
+        return result
 
     def write_file(self, args: dict[str, Any]) -> str:
         path = self.resolve_path(required_string(args, "path"), must_exist=False)
         content = required_string(args, "content", allow_empty=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+        self.invalidate_cache_for_path(path)
         return f"Wrote {len(content)} characters to {self.relative(path)}"
 
     def replace_text(self, args: dict[str, Any]) -> str:
@@ -314,6 +439,7 @@ class LocalFileTools:
         replace_count = count if count > 0 else occurrences
         updated = text.replace(old_text, new_text, replace_count)
         path.write_text(updated, encoding="utf-8")
+        self.invalidate_cache_for_path(path)
         return f"Replaced {min(occurrences, replace_count)} occurrence(s) in {self.relative(path)}"
 
     def append_file(self, args: dict[str, Any]) -> str:
@@ -322,6 +448,7 @@ class LocalFileTools:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(content)
+        self.invalidate_cache_for_path(path)
         return f"Appended {len(content)} characters to {self.relative(path)}"
 
     def delete_file(self, args: dict[str, Any]) -> str:
@@ -329,6 +456,7 @@ class LocalFileTools:
         if not path.is_file():
             raise ValueError(f"Not a file: {self.relative(path)}")
         path.unlink()
+        self.invalidate_cache_for_path(path)
         return f"Deleted {self.relative(path)}"
 
     def make_directory(self, args: dict[str, Any]) -> str:
@@ -361,6 +489,30 @@ class LocalFileTools:
             return str(path.resolve().relative_to(self.workdir)).replace("\\", "/")
         except ValueError:
             return str(path)
+
+    def invalidate_cache_for_path(self, path: Path) -> None:
+        resolved = str(path.resolve())
+        for key in list(self.read_cache):
+            if key[0] == resolved:
+                del self.read_cache[key]
+
+    def format_cached_range(self, start_line: int | None, line_count: int | None) -> str:
+        if start_line is None:
+            return ""
+        return f" lines {start_line}-{start_line + (line_count or 1) - 1}"
+
+    def matches_pattern(self, value: str, pattern: str) -> bool:
+        value_lower = self.normalize_search_pattern(value).lower()
+        pattern_lower = self.normalize_search_pattern(pattern).lower()
+        if any(char in pattern for char in "*?[]"):
+            return fnmatch.fnmatchcase(value_lower, pattern_lower)
+        return pattern_lower in value_lower
+
+    def normalize_search_pattern(self, value: str) -> str:
+        normalized = value.replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized
 
     def _ok(self, text: str) -> dict[str, Any]:
         return {"content": [{"type": "text", "text": text}]}
@@ -425,7 +577,7 @@ class AgentCliApp:
     def start(self) -> None:
         print(f"Agent file tools: {len(self.tools)}")
         print(f"Working directory: {self.file_tools.workdir}")
-        print("Type /help for commands. Type /quit to exit.")
+        print("Type /help for commands. Type /multiline for multi-line input. Type /quit to exit.")
         while True:
             try:
                 user_input = input("\nuser> ").strip()
@@ -445,6 +597,19 @@ class AgentCliApp:
                 self.save()
             except Exception as exc:
                 print(f"error: {exc}")
+
+    def read_multiline_input(self) -> str:
+        print("Enter multi-line input. Finish with a line containing only .")
+        lines: list[str] = []
+        while True:
+            try:
+                line = input("... ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return ""
+            if line == ".":
+                return "\n".join(lines).strip()
+            lines.append(line)
 
     def run_turn(self) -> None:
         invalid_tool_calls: dict[str, int] = {}
@@ -567,6 +732,15 @@ class AgentCliApp:
         name, _, rest = command.partition(" ")
         if name == "/help":
             print_help()
+        elif name == "/multiline":
+            user_input = self.read_multiline_input()
+            if user_input:
+                self.messages.append({"role": "user", "content": user_input})
+                try:
+                    self.run_turn()
+                    self.save()
+                except Exception as exc:
+                    print(f"error: {exc}")
         elif name == "/set_directory":
             self.set_directory(rest.strip())
         elif name == "/pwd":

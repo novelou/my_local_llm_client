@@ -1,0 +1,7 @@
+{
+  "llama_base_url": "http://127.0.0.1:8081/v1/",
+  "llama_model": "local-model",
+  "temperature": 0.7,
+  "request_timeout": 120,
+  "system_prompt": "You are a helpful chat assistant.\nAnswer the user directly and clearly.\nYou have no tools and cannot inspect files, browse the web, or perform external actions.\n"
+}
