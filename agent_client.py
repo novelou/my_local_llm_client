@@ -83,6 +83,15 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+def reasoning_text(message: dict[str, Any]) -> str:
+    """Return reasoning emitted by llama-server, if present."""
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def print_help() -> None:
     print(
         textwrap.dedent(
@@ -624,6 +633,10 @@ class AgentCliApp:
                 fallback_messages = self.messages + [{"role": "system", "content": self.fallback_tool_prompt()}]
                 message = self.llama.chat(fallback_messages, [])
 
+            reasoning = reasoning_text(message)
+            if reasoning:
+                print(f"\nreason> {reasoning}")
+
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 self.messages.append(message)
@@ -653,7 +666,7 @@ class AgentCliApp:
             if fallback:
                 name, arguments = fallback
                 arguments = normalize_tool_arguments(arguments, name)
-                self.messages.append({"role": "assistant", "content": content})
+                self.messages.append(message)
                 print(f"tool> {name} {json.dumps(arguments, ensure_ascii=False)}")
                 if self.handle_tool_validation(name, arguments, invalid_tool_calls, None, fallback_mode=True):
                     return
@@ -662,7 +675,7 @@ class AgentCliApp:
                 self.messages.append({"role": "user", "content": "Tool result:\n" + tool_result_to_text(result)})
                 continue
 
-            self.messages.append({"role": "assistant", "content": content})
+            self.messages.append(message)
             print(f"\nassistant> {content}")
             return
         print("assistant> Tool loop limit reached. Try narrowing the request.")
