@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from textual import work
+    from textual import events, work
     from textual.app import App, ComposeResult
-    from textual.containers import VerticalScroll
-    from textual.widgets import Collapsible, Footer, Header, Input, Markdown, Static
+    from textual.containers import Vertical, VerticalScroll
+    from textual.message import Message
+    from textual.widgets import Collapsible, Footer, Header, Markdown, Static, TextArea
 except ModuleNotFoundError as exc:
     if exc.name == "textual":
         raise SystemExit("Textual is required: py -3 -m pip install textual") from exc
@@ -34,8 +35,28 @@ HELP_TEXT = """### Commands
 - `/help`, `/pwd`, `/tools`, `/sessions`, `/new`, `/config`, `/quit`
 - `/set_directory PATH`, `/call NAME {json}`, `/load SESSION_ID`
 
+Enter submits. Shift+Enter inserts a newline.
 Click a Reasoning, Tool call, or Tool result header to expand or collapse it.
 """
+
+
+class PromptTextArea(TextArea):
+    """Multiline prompt where Enter submits and Shift+Enter inserts a newline."""
+
+    class Submitted(Message):
+        def __init__(self, text: str) -> None:
+            self.text = text
+            super().__init__()
+
+    async def on_key(self, event: events.Key) -> None:
+        if event.key == "shift+enter":
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+        elif event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(self.text))
 
 
 class AgentTextualApp(App[None]):
@@ -60,7 +81,8 @@ class AgentTextualApp(App[None]):
     .tool-result-block { background: #10251c; border: round #2ea043; color: #7ee787; }
     .tool-error-block { background: #2b1618; border: round #f85149; color: #ff7b72; }
     .block-content { width: 100%; height: auto; padding: 1 2; }
-    #prompt { dock: bottom; height: 3; margin: 0 1 1 1; border: tall #3b82f6; background: #161b22; }
+    .nested-blocks { width: 100%; height: auto; padding: 0 0 0 2; }
+    #prompt { dock: bottom; height: 6; margin: 0 1 1 1; border: tall #3b82f6; background: #161b22; }
     #prompt:focus { border: tall #58a6ff; }
     """
 
@@ -82,7 +104,11 @@ class AgentTextualApp(App[None]):
         yield Header()
         yield Static(id="status")
         yield VerticalScroll(id="conversation")
-        yield Input(placeholder="Message or /command", id="prompt")
+        yield PromptTextArea(
+            placeholder="Message or /command (Enter to send, Shift+Enter for newline)",
+            id="prompt",
+            show_line_numbers=False,
+        )
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -91,16 +117,16 @@ class AgentTextualApp(App[None]):
             "**Local LLM File Agent**  \n"
             f"Working directory: `{self.file_tools.workdir}`  \n"
             "Click Reasoning and Tool headers to expand them.", "system-message")
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptTextArea).focus()
 
     def system_prompt(self) -> str:
         return f"{self.config.system_prompt}\nActive working directory: {self.file_tools.workdir}\n"
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    async def on_prompt_text_area_submitted(self, event: PromptTextArea.Submitted) -> None:
+        text = event.text.strip()
         if not text:
             return
-        event.input.value = ""
+        self.query_one("#prompt", PromptTextArea).load_text("")
         if self.busy:
             await self.add_plain("A response is already running.", "system-message", "Busy")
         elif text.startswith("/"):
@@ -132,10 +158,11 @@ class AgentTextualApp(App[None]):
                     message = await asyncio.to_thread(self.llama.chat, fallback_messages, [])
 
                 reasoning = reasoning_text(message)
+                reasoning_block: Collapsible | None = None
                 if reasoning:
-                    await self.add_collapsible(
+                    reasoning_block = await self.add_collapsible(
                         reasoning, f"Reasoning · {self.line_label(reasoning)}",
-                        "reason-block", True)
+                        "reason-block", False)
 
                 tool_calls = message.get("tool_calls") or []
                 if tool_calls:
@@ -150,7 +177,8 @@ class AgentTextualApp(App[None]):
                             arguments = {"_invalid_json": str(exc), "_raw": raw_args}
                         arguments = normalize_tool_arguments(arguments, name)
                         if await self.execute_tool(
-                            name, arguments, invalid_calls, tool_call.get("id"), False):
+                            name, arguments, invalid_calls, tool_call.get("id"), False,
+                            reasoning_block):
                             return
                     continue
 
@@ -161,7 +189,7 @@ class AgentTextualApp(App[None]):
                     self.messages.append(message)
                     if await self.execute_tool(
                         name, normalize_tool_arguments(arguments, name),
-                        invalid_calls, None, True):
+                        invalid_calls, None, True, reasoning_block):
                         return
                     continue
 
@@ -179,14 +207,15 @@ class AgentTextualApp(App[None]):
     async def execute_tool(
         self, name: str | None, arguments: Any, invalid_calls: dict[str, int],
         tool_call_id: str | None, fallback_mode: bool,
+        parent: Collapsible | None = None,
     ) -> bool:
         await self.add_collapsible(
             json.dumps(arguments, ensure_ascii=False, indent=2),
-            f"Tool call · {name or 'unknown'}", "tool-call-block", False)
+            f"Tool call · {name or 'unknown'}", "tool-call-block", True, parent)
         error = self.validator.validate(name, arguments)
         if error:
             await self.add_collapsible(
-                error, f"Rejected · {name or 'unknown'}", "tool-error-block", False)
+                error, f"Rejected · {name or 'unknown'}", "tool-error-block", False, parent)
             signature = tool_call_signature(name, arguments)
             invalid_calls[signature] = invalid_calls.get(signature, 0) + 1
             feedback = self.validation_feedback(error)
@@ -211,7 +240,7 @@ class AgentTextualApp(App[None]):
         await self.add_collapsible(
             result_text,
             f"{'Failed' if is_error else 'Tool result'} · {name} · {self.line_label(result_text)}",
-            "tool-error-block" if is_error else "tool-result-block", True)
+            "tool-error-block" if is_error else "tool-result-block", True, parent)
         if fallback_mode:
             self.messages.append({"role": "user", "content": "Tool result:\n" + result_text})
         else:
@@ -283,7 +312,7 @@ class AgentTextualApp(App[None]):
                     "system-message", "Configuration")
             elif name == "/multiline":
                 await self.add_plain(
-                    "This UI currently uses a single-line composer. Paste compact text or use agent_client.py.",
+                    "Multiline input is enabled. Press Shift+Enter to insert a newline.",
                     "system-message", "Multiline")
             elif name == "/quit":
                 self.action_quit()
@@ -302,7 +331,7 @@ class AgentTextualApp(App[None]):
             raise ValueError(error)
         await self.add_collapsible(
             json.dumps(arguments, ensure_ascii=False, indent=2),
-            f"Tool call · {name}", "tool-call-block", False)
+            f"Tool call · {name}", "tool-call-block", True)
         result = await asyncio.to_thread(self.file_tools.call_tool, name, arguments)
         text = tool_result_to_text(result)
         await self.add_collapsible(
@@ -312,21 +341,35 @@ class AgentTextualApp(App[None]):
     async def render_loaded_session(self) -> None:
         await self.clear_conversation()
         await self.add_plain(f"Loaded {self.session_id}", "system-message", "Session")
+        reasoning_block: Collapsible | None = None
         for message in self.messages:
             role, content = message.get("role"), str(message.get("content") or "")
             if role == "user":
+                reasoning_block = None
                 await self.add_plain(content, "user-message", "You")
             elif role == "assistant":
+                reasoning_block = None
                 reason = reasoning_text(message)
                 if reason:
+                    reasoning_block = await self.add_collapsible(
+                        reason, f"Reasoning · {self.line_label(reason)}", "reason-block", False)
+                tool_calls = message.get("tool_calls") or []
+                for tool_call in tool_calls:
+                    function = tool_call.get("function", {})
+                    name = function.get("name") or "unknown"
+                    arguments = function.get("arguments") or "{}"
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments, ensure_ascii=False, indent=2)
                     await self.add_collapsible(
-                        reason, f"Reasoning · {self.line_label(reason)}", "reason-block", True)
+                        arguments, f"Tool call · {name}", "tool-call-block", True,
+                        reasoning_block)
                 if content:
+                    reasoning_block = None
                     await self.add_markdown(content, "assistant-message")
             elif role == "tool":
                 await self.add_collapsible(
                     content, f"Tool result · {message.get('name', 'tool')} · {self.line_label(content)}",
-                    "tool-result-block", True)
+                    "tool-result-block", True, reasoning_block)
 
     async def add_plain(self, text: str, css_class: str, title: str | None = None) -> None:
         widget = Static(text, markup=False, classes=f"message {css_class}")
@@ -339,15 +382,30 @@ class AgentTextualApp(App[None]):
 
     async def add_collapsible(
         self, text: str, title: str, css_class: str, collapsed: bool,
-    ) -> None:
+        parent: Collapsible | None = None,
+    ) -> Collapsible:
         body = Static(text, markup=False, classes="block-content")
-        await self.mount_in_conversation(
-            Collapsible(body, title=title, collapsed=collapsed, classes=css_class))
+        nested_blocks = Vertical(classes="nested-blocks")
+        block = Collapsible(body, nested_blocks, title=title, collapsed=collapsed, classes=css_class)
+        block._nested_blocks = nested_blocks  # type: ignore[attr-defined]
+        if parent is None:
+            await self.mount_in_conversation(block)
+        else:
+            await self.mount_in_collapsible(parent, block)
+        return block
 
     async def mount_in_conversation(self, widget: Static | Markdown | Collapsible) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
         await conversation.mount(widget)
         conversation.scroll_end(animate=False)
+
+    async def mount_in_collapsible(self, parent: Collapsible, widget: Collapsible) -> None:
+        nested_blocks = getattr(parent, "_nested_blocks", None)
+        if nested_blocks is None:
+            await parent.mount(widget)
+        else:
+            await nested_blocks.mount(widget)
+        self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
 
     async def clear_conversation(self) -> None:
         await self.query_one("#conversation", VerticalScroll).remove_children()
@@ -361,7 +419,7 @@ class AgentTextualApp(App[None]):
 
     def set_busy(self, busy: bool, state: str) -> None:
         self.busy = busy
-        prompt = self.query_one("#prompt", Input)
+        prompt = self.query_one("#prompt", PromptTextArea)
         prompt.disabled = busy
         if not busy:
             prompt.focus()
@@ -380,7 +438,7 @@ class AgentTextualApp(App[None]):
         await self.clear_conversation()
 
     def action_focus_input(self) -> None:
-        self.query_one("#prompt", Input).focus()
+        self.query_one("#prompt", PromptTextArea).focus()
 
     def action_quit(self) -> None:
         self.save()
