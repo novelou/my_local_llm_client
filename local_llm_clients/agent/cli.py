@@ -76,6 +76,13 @@ class FileCacheEntry:
     mtime_ns: int
     size: int
     text: str
+    encoding: str
+
+
+@dataclass(frozen=True)
+class DecodedText:
+    text: str
+    encoding: str
 
 
 def env(name: str, default: str) -> str:
@@ -100,6 +107,20 @@ def resolve_allowed_tools_path(value: str, config_path: Path | None) -> str:
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def read_text_with_fallback(path: Path) -> DecodedText:
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "cp932", "shift_jis"):
+        try:
+            return DecodedText(data.decode(encoding), encoding)
+        except UnicodeDecodeError:
+            continue
+    return DecodedText(data.decode("utf-8", errors="replace"), "utf-8")
+
+
+def write_text_preserving_encoding(path: Path, text: str, encoding: str) -> None:
+    path.write_bytes(text.encode(encoding, errors="replace"))
 
 
 def reasoning_text(message: dict[str, Any]) -> str:
@@ -579,7 +600,7 @@ class LocalFileTools:
             ):
                 continue
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = read_text_with_fallback(path).text
             except OSError:
                 continue
             for line_number, line in enumerate(text.splitlines(), 1):
@@ -616,16 +637,17 @@ class LocalFileTools:
                 "Set force_reload=true if you need to read the file again."
             )
 
-        text = path.read_text(encoding="utf-8")
+        decoded = read_text_with_fallback(path)
+        text = decoded.text
         if start_line is None and line_count is None:
-            self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, text)
+            self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, text, decoded.encoding)
             return text
         lines = text.splitlines()
         start = (normalized_start or 1) - 1
         end = start + (normalized_count or 200)
         numbered = [f"{index + 1}: {line}" for index, line in enumerate(lines[start:end], start)]
         result = "\n".join(numbered)
-        self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, result)
+        self.read_cache[cache_key] = FileCacheEntry(stat.st_mtime_ns, stat.st_size, result, decoded.encoding)
         return result
 
     def write_file(self, args: dict[str, Any]) -> str:
@@ -641,24 +663,26 @@ class LocalFileTools:
         old_text = required_string(args, "old_text")
         new_text = required_string(args, "new_text", allow_empty=True)
         count = int(args.get("count") or 0)
-        text = path.read_text(encoding="utf-8")
+        decoded = read_text_with_fallback(path)
+        text = decoded.text
         occurrences = text.count(old_text)
         if occurrences == 0:
             raise ValueError(f"Text not found in {self.relative(path)}")
         replace_count = count if count > 0 else occurrences
         updated = text.replace(old_text, new_text, replace_count)
-        path.write_text(updated, encoding="utf-8")
+        write_text_preserving_encoding(path, updated, decoded.encoding)
         self.invalidate_cache_for_path(path)
-        return f"Replaced {min(occurrences, replace_count)} occurrence(s) in {self.relative(path)}"
+        return f"Replaced {min(occurrences, replace_count)} occurrence(s) in {self.relative(path)} using {decoded.encoding}"
 
     def append_file(self, args: dict[str, Any]) -> str:
         path = self.resolve_path(required_string(args, "path"), must_exist=False)
         content = required_string(args, "content", allow_empty=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
+        encoding = read_text_with_fallback(path).encoding if path.exists() else "utf-8"
+        with path.open("a", encoding=encoding, errors="replace") as handle:
             handle.write(content)
         self.invalidate_cache_for_path(path)
-        return f"Appended {len(content)} characters to {self.relative(path)}"
+        return f"Appended {len(content)} characters to {self.relative(path)} using {encoding}"
 
     def delete_file(self, args: dict[str, Any]) -> str:
         path = self.resolve_path(required_string(args, "path"), must_exist=True)
