@@ -1,5 +1,10 @@
 /.agents/
+/test/
 /game/
 __pycache__/
 *.py[cod]
 local_llm_clients/sessions/
+/build/
+/dist/
+/.pyuser/
+*.spec.bak

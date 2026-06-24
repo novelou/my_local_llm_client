@@ -59,11 +59,13 @@ class Config:
     @classmethod
     def load(cls, path: Path | None) -> "Config":
         config = cls()
+        config_path = path
         if path and path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             for key, value in data.items():
                 if hasattr(config, key):
                     setattr(config, key, value)
+        config.allowed_tools_path = resolve_allowed_tools_path(config.allowed_tools_path, config_path)
         config.llama_base_url = env("LLAMA_BASE_URL", config.llama_base_url)
         config.llama_model = env("LLAMA_MODEL", config.llama_model)
         return config
@@ -79,6 +81,21 @@ class FileCacheEntry:
 def env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value if value else default
+
+
+def resolve_allowed_tools_path(value: str, config_path: Path | None) -> str:
+    raw = Path(value)
+    if raw.is_absolute():
+        return str(raw)
+    candidates: list[Path] = []
+    if config_path is not None:
+        candidates.append(config_path.resolve().parent / raw)
+        candidates.append(config_path.resolve().parent / raw.name)
+    candidates.extend([Path.cwd() / raw, CONFIG_DIR / raw.name])
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0] if candidates else raw)
 
 
 def now_iso() -> str:
