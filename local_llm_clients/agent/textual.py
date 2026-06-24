@@ -93,7 +93,7 @@ class AgentTextualApp(App[None]):
         super().__init__()
         self.config, self.store = config, store
         self.session_id = store.new_id()
-        self.file_tools = LocalFileTools(Path(config.workdir))
+        self.file_tools = LocalFileTools(Path(config.workdir), Path(config.allowed_tools_path))
         self.tools = self.file_tools.list_tools()
         self.openai_tools = to_openai_tools(self.tools)
         self.validator = ToolValidator(self.tools)
@@ -123,7 +123,16 @@ class AgentTextualApp(App[None]):
         self.query_one("#prompt", PromptTextArea).focus()
 
     def system_prompt(self) -> str:
-        return f"{self.config.system_prompt}\nActive working directory: {self.file_tools.workdir}\n"
+        return (
+            f"{self.config.system_prompt}\n"
+            f"Active working directory: {self.file_tools.workdir}\n"
+            f"Allowed command presets file: {self.file_tools.allowed_tools_path}\n"
+            "Compile and exception-monitor workflow:\n"
+            "- Use list_command_presets before running local compile/test commands.\n"
+            "- Use run_command_preset only with preset names from allowed_tools.json; never invent shell commands.\n"
+            "- When asked to fix compile or runtime errors, run a compile or exception_monitor preset first, inspect stdout/stderr, edit only implicated files, then run the same preset again.\n"
+            "- Stop and report if the same error repeats or no allowed preset applies.\n"
+        )
 
     async def on_prompt_text_area_submitted(self, event: PromptTextArea.Submitted) -> None:
         text = event.text.strip()
@@ -465,7 +474,7 @@ def main() -> None:
     if args.set_directory:
         config.workdir = str(args.set_directory)
     if args.call_tool:
-        tools = LocalFileTools(Path(config.workdir))
+        tools = LocalFileTools(Path(config.workdir), Path(config.allowed_tools_path))
         arguments = parse_cli_arguments(args.arguments)
         print(tool_result_to_text(tools.call_tool(args.call_tool, arguments)))
         return

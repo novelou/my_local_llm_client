@@ -10,7 +10,7 @@ mcp_client_textual.py        Root launcher for Unity MCP Textual UI
 local_llm_clients/
   __init__.py         Package paths for config and sessions
   common.py          Shared llama-server HTTP client and session storage
-  config/            Active config files
+  config/            Active config files and allowed tool presets
     examples/        Example config files
   sessions/          Runtime session history, ignored by git
   docs/              README and structure notes

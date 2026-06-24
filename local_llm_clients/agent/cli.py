@@ -14,6 +14,7 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import textwrap
 import uuid
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ class Config:
     max_tool_rounds: int = 8
     max_invalid_tool_retries: int = 0
     workdir: str = "."
+    allowed_tools_path: str = str(CONFIG_DIR / "allowed_tools.json")
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -126,6 +128,7 @@ def create_default_config(path: Path) -> None:
                 "max_tool_rounds": 8,
                 "max_invalid_tool_retries": 0,
                 "workdir": ".",
+                "allowed_tools_path": str(CONFIG_DIR / "allowed_tools.json"),
                 "system_prompt": DEFAULT_SYSTEM_PROMPT,
             },
             ensure_ascii=False,
@@ -160,8 +163,10 @@ def to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class LocalFileTools:
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, allowed_tools_path: Path | None = None) -> None:
         self.read_cache: dict[tuple[str, int | None, int | None], FileCacheEntry] = {}
+        self.allowed_tools_path = allowed_tools_path or (CONFIG_DIR / "allowed_tools.json")
+        self.allowed_tools = self.load_allowed_tools()
         self.workdir = self.set_workdir(workdir)
 
     def set_workdir(self, workdir: Path) -> Path:
@@ -176,6 +181,43 @@ class LocalFileTools:
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
+            {
+                "name": "list_command_presets",
+                "description": (
+                    "List allowed local command presets for compile and exception-monitor loops. "
+                    "Use this before run_command_preset when you need to compile, test, or inspect runtime exceptions."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category filter such as compile or exception_monitor.",
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Optional language filter such as python or java.",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "run_command_preset",
+                "description": (
+                    "Run one command preset from allowed_tools.json. "
+                    "Use for compile/test/exception-monitor loops, then inspect stdout/stderr and fix implicated files."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Preset name from list_command_presets, such as python_compile_all.",
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
             {
                 "name": "list_files",
                 "description": "List files and directories under the active working directory.",
@@ -323,9 +365,150 @@ class LocalFileTools:
                 return self._ok(self.delete_file(args))
             if name == "make_directory":
                 return self._ok(self.make_directory(args))
+            if name == "list_command_presets":
+                return self._ok(self.list_command_presets(args))
+            if name == "run_command_preset":
+                return self.run_command_preset(args)
             return self._error(f"Unknown tool: {name}")
         except Exception as exc:
             return self._error(str(exc))
+
+    def load_allowed_tools(self) -> dict[str, Any]:
+        if not self.allowed_tools_path.exists():
+            return {
+                "execution_policy": {
+                    "shell": False,
+                    "allow_custom_commands": False,
+                    "max_output_chars": 20000,
+                },
+                "command_presets": [],
+            }
+        data = json.loads(self.allowed_tools_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("allowed_tools.json must contain a JSON object.")
+        if not isinstance(data.get("command_presets"), list):
+            raise ValueError("allowed_tools.json must contain command_presets as a list.")
+        return data
+
+    def command_presets(self) -> list[dict[str, Any]]:
+        presets = self.allowed_tools.get("command_presets", [])
+        return [preset for preset in presets if isinstance(preset, dict) and isinstance(preset.get("name"), str)]
+
+    def command_preset_by_name(self, name: str) -> dict[str, Any]:
+        for preset in self.command_presets():
+            if preset.get("name") == name:
+                return preset
+        known = ", ".join(sorted(str(preset.get("name")) for preset in self.command_presets()))
+        raise ValueError(f"Unknown command preset '{name}'. Available presets: {known}")
+
+    def list_command_presets(self, args: dict[str, Any]) -> str:
+        category = args.get("category")
+        language = args.get("language")
+        lines: list[str] = []
+        for preset in self.command_presets():
+            if isinstance(category, str) and category and preset.get("category") != category:
+                continue
+            if isinstance(language, str) and language and preset.get("language") != language:
+                continue
+            argv = preset.get("argv")
+            argv_text = " ".join(str(part) for part in argv) if isinstance(argv, list) else "<invalid argv>"
+            lines.append(
+                f"{preset.get('name')} [{preset.get('category', 'uncategorized')}/{preset.get('language', 'any')}]\n"
+                f"  {preset.get('description', '')}\n"
+                f"  argv: {argv_text}"
+            )
+        return "\n".join(lines) if lines else "<no matching command presets>"
+
+    def run_command_preset(self, args: dict[str, Any]) -> dict[str, Any]:
+        name = required_string(args, "name")
+        preset = self.command_preset_by_name(name)
+        policy = self.allowed_tools.get("execution_policy", {})
+        if isinstance(policy, dict) and policy.get("shell") is not False:
+            raise ValueError("allowed_tools.json must set execution_policy.shell=false.")
+        argv = preset.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(part, str) and part for part in argv):
+            raise ValueError(f"Command preset '{name}' must define a non-empty string argv list.")
+        cwd = self.resolve_path(str(preset.get("cwd") or "."), must_exist=True)
+        if not cwd.is_dir():
+            raise ValueError(f"Command preset '{name}' cwd is not a directory: {self.relative(cwd)}")
+        for required in preset.get("requires_files") or []:
+            if not isinstance(required, str):
+                raise ValueError(f"Command preset '{name}' has a non-string requires_files item.")
+            self.resolve_path(required, must_exist=True)
+        timeout = int(preset.get("timeout_seconds") or (policy.get("default_timeout_seconds") if isinstance(policy, dict) else 120) or 120)
+        max_output_chars = int(policy.get("max_output_chars") or 20000) if isinstance(policy, dict) else 20000
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                shell=False,
+            )
+            timed_out = False
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = self.bytes_or_text_to_string(exc.stdout)
+            stderr = self.bytes_or_text_to_string(exc.stderr)
+            exit_code = None
+        success_codes = preset.get("success_exit_codes") or [0]
+        success = (not timed_out) and exit_code in success_codes
+        output = self.format_command_result(
+            name=name,
+            argv=argv,
+            cwd=cwd,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stdout=stdout,
+            stderr=stderr,
+            max_output_chars=max_output_chars,
+        )
+        return self._ok(output) if success else self._error(output)
+
+    def format_command_result(
+        self,
+        name: str,
+        argv: list[str],
+        cwd: Path,
+        exit_code: int | None,
+        timed_out: bool,
+        stdout: str,
+        stderr: str,
+        max_output_chars: int,
+    ) -> str:
+        stdout = self.truncate_output(stdout, max_output_chars)
+        stderr = self.truncate_output(stderr, max_output_chars)
+        return (
+            f"Preset: {name}\n"
+            f"Command: {json.dumps(argv, ensure_ascii=False)}\n"
+            f"Working directory: {self.relative(cwd)}\n"
+            f"Exit code: {exit_code if exit_code is not None else '<none>'}\n"
+            f"Timed out: {timed_out}\n\n"
+            f"STDOUT:\n{stdout or '<empty>'}\n\n"
+            f"STDERR:\n{stderr or '<empty>'}"
+        )
+
+    @staticmethod
+    def bytes_or_text_to_string(value: bytes | str | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
+
+    @staticmethod
+    def truncate_output(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        head = max_chars // 2
+        tail = max_chars - head
+        return text[:head].rstrip() + "\n... <truncated> ...\n" + text[-tail:].lstrip()
 
     def list_filesystem(self, args: dict[str, Any]) -> str:
         root = self.resolve_path(str(args.get("path") or "."), must_exist=True)
@@ -572,7 +755,7 @@ class AgentCliApp:
         self.config = config
         self.store = store
         self.session_id = store.new_id()
-        self.file_tools = LocalFileTools(Path(config.workdir))
+        self.file_tools = LocalFileTools(Path(config.workdir), Path(config.allowed_tools_path))
         self.tools = self.file_tools.list_tools()
         self.openai_tools = to_openai_tools(self.tools)
         self.validator = ToolValidator(self.tools)
@@ -581,7 +764,16 @@ class AgentCliApp:
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt()}]
 
     def system_prompt(self) -> str:
-        return f"{self.config.system_prompt}\nActive working directory: {self.file_tools.workdir}\n"
+        return (
+            f"{self.config.system_prompt}\n"
+            f"Active working directory: {self.file_tools.workdir}\n"
+            f"Allowed command presets file: {self.file_tools.allowed_tools_path}\n"
+            "Compile and exception-monitor workflow:\n"
+            "- Use list_command_presets before running local compile/test commands.\n"
+            "- Use run_command_preset only with preset names from allowed_tools.json; never invent shell commands.\n"
+            "- When asked to fix compile or runtime errors, run a compile or exception_monitor preset first, inspect stdout/stderr, edit only implicated files, then run the same preset again.\n"
+            "- Stop and report if the same error repeats or no allowed preset applies.\n"
+        )
 
     def start(self) -> None:
         print(f"Agent file tools: {len(self.tools)}")
@@ -835,7 +1027,7 @@ def main() -> None:
     store = SessionStore(SESSIONS_DIR / "agent")
 
     if args.call_tool:
-        tools = LocalFileTools(Path(config.workdir))
+        tools = LocalFileTools(Path(config.workdir), Path(config.allowed_tools_path))
         arguments = parse_cli_arguments(args.arguments)
         print(tool_result_to_text(tools.call_tool(args.call_tool, arguments)))
         return

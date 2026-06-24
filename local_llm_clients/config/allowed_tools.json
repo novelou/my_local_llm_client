@@ -1,0 +1,307 @@
+{
+  "version": 1,
+  "description": "Allowlist for local command presets. The LLM may request a preset by name, but must not construct arbitrary shell commands.",
+  "execution_policy": {
+    "shell": false,
+    "allow_custom_commands": false,
+    "default_cwd": ".",
+    "default_timeout_seconds": 120,
+    "max_output_chars": 20000
+  },
+  "command_presets": [
+    {
+      "name": "python_compile_all",
+      "category": "compile",
+      "language": "python",
+      "description": "Compile-check every Python file below the current working directory.",
+      "argv": ["python", "-m", "compileall", "-q", "."],
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"]
+    },
+    {
+      "name": "python_test_pytest",
+      "category": "compile",
+      "language": "python",
+      "description": "Run pytest as the Python verification step when the project has pytest tests.",
+      "argv": ["python", "-m", "pytest", "-q"],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"]
+    },
+    {
+      "name": "python_exception_smoke",
+      "category": "exception_monitor",
+      "language": "python",
+      "description": "Run pytest in fail-fast mode to surface the first exception traceback quickly.",
+      "argv": ["python", "-m", "pytest", "-q", "-x", "--tb=short"],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "error_patterns": [
+        "Traceback (most recent call last):",
+        "Exception",
+        "Error:",
+        "FAILED",
+        "ModuleNotFoundError",
+        "SyntaxError"
+      ]
+    },
+    {
+      "name": "java_compile_src",
+      "category": "compile",
+      "language": "java",
+      "description": "Compile Java source files under src with javac. Intended for simple non-Gradle Java projects.",
+      "argv": ["javac", "-d", "build/classes", "@sources.txt"],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["sources.txt"],
+      "notes": "Create sources.txt with the project source list before enabling this preset."
+    },
+    {
+      "name": "java_exception_smoke",
+      "category": "exception_monitor",
+      "language": "java",
+      "description": "Run a configured Java main class and capture thrown exceptions.",
+      "argv": ["java", "-cp", "build/classes", "Main"],
+      "cwd": ".",
+      "timeout_seconds": 120,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "error_patterns": [
+        "Exception in thread",
+        "Caused by:",
+        "java.lang.",
+        "at "
+      ],
+      "notes": "Replace Main with the project entry class before enabling this preset."
+    },
+    {
+      "name": "gradlew_compile",
+      "category": "compile",
+      "language": "java",
+      "description": "Compile/build a Gradle project through the checked-in Windows Gradle wrapper.",
+      "argv": [".\\gradlew.bat", "build", "--console=plain"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["gradlew.bat"]
+    },
+    {
+      "name": "gradlew_compile_unix",
+      "category": "compile",
+      "language": "java",
+      "description": "Compile/build a Gradle project through the checked-in Unix Gradle wrapper.",
+      "argv": ["./gradlew", "build", "--console=plain"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["gradlew"]
+    },
+    {
+      "name": "gradlew_test_fail_fast",
+      "category": "exception_monitor",
+      "language": "java",
+      "description": "Run Gradle tests and capture the first useful exception or assertion failure output.",
+      "argv": [".\\gradlew.bat", "test", "--console=plain", "--stacktrace"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["gradlew.bat"],
+      "error_patterns": [
+        "FAILED",
+        "FAILURE:",
+        "Exception",
+        "Caused by:",
+        "Compilation failed",
+        "Execution failed for task"
+      ]
+    },
+    {
+      "name": "gradlew_test_fail_fast_unix",
+      "category": "exception_monitor",
+      "language": "java",
+      "description": "Run Gradle tests through the Unix wrapper and capture exception output.",
+      "argv": ["./gradlew", "test", "--console=plain", "--stacktrace"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["gradlew"],
+      "error_patterns": [
+        "FAILED",
+        "FAILURE:",
+        "Exception",
+        "Caused by:",
+        "Compilation failed",
+        "Execution failed for task"
+      ]
+    },
+    {
+      "name": "cpp_cmake_configure",
+      "category": "compile",
+      "language": "cpp",
+      "description": "Configure a CMake C/C++ project into the normal build directory.",
+      "argv": ["cmake", "-S", ".", "-B", "build"],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt"],
+      "error_patterns": [
+        "CMake Error",
+        "CMake Warning",
+        "Configuring incomplete"
+      ]
+    },
+    {
+      "name": "cpp_cmake_build",
+      "category": "compile",
+      "language": "cpp",
+      "description": "Build the normal CMake build directory.",
+      "argv": ["cmake", "--build", "build"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt", "build"],
+      "error_patterns": [
+        "error:",
+        "fatal error:",
+        "FAILED:",
+        "Build FAILED",
+        "undefined reference",
+        "unresolved external symbol"
+      ]
+    },
+    {
+      "name": "cpp_ctest",
+      "category": "exception_monitor",
+      "language": "cpp",
+      "description": "Run CTest from the normal CMake build directory with failing test output.",
+      "argv": ["ctest", "--test-dir", "build", "--output-on-failure"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt", "build"],
+      "error_patterns": [
+        "Errors while running CTest",
+        "Subprocess aborted",
+        "Exception",
+        "Segmentation fault",
+        "Assertion",
+        "failed",
+        "FAILED"
+      ]
+    },
+    {
+      "name": "cpp_cmake_clean_build",
+      "category": "compile",
+      "language": "cpp",
+      "description": "Build the normal CMake build directory after invoking the generator clean target first.",
+      "argv": ["cmake", "--build", "build", "--clean-first"],
+      "cwd": ".",
+      "timeout_seconds": 360,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt", "build"],
+      "error_patterns": [
+        "error:",
+        "fatal error:",
+        "FAILED:",
+        "Build FAILED",
+        "undefined reference",
+        "unresolved external symbol"
+      ],
+      "notes": "Use when stale object files are suspected. This does not remove the build directory or CMake cache."
+    },
+    {
+      "name": "cpp_cmake_configure_fresh",
+      "category": "compile",
+      "language": "cpp",
+      "description": "Configure a CMake C/C++ project into a separate fresh agent build directory without deleting existing builds.",
+      "argv": ["cmake", "-S", ".", "-B", "build-agent-fresh"],
+      "cwd": ".",
+      "timeout_seconds": 180,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt"],
+      "error_patterns": [
+        "CMake Error",
+        "CMake Warning",
+        "Configuring incomplete"
+      ],
+      "notes": "Use after repeated suspicious failures from the normal build directory."
+    },
+    {
+      "name": "cpp_cmake_build_fresh",
+      "category": "compile",
+      "language": "cpp",
+      "description": "Build the separate fresh agent CMake build directory.",
+      "argv": ["cmake", "--build", "build-agent-fresh"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt", "build-agent-fresh"],
+      "error_patterns": [
+        "error:",
+        "fatal error:",
+        "FAILED:",
+        "Build FAILED",
+        "undefined reference",
+        "unresolved external symbol"
+      ]
+    },
+    {
+      "name": "cpp_ctest_fresh",
+      "category": "exception_monitor",
+      "language": "cpp",
+      "description": "Run CTest from the separate fresh agent CMake build directory.",
+      "argv": ["ctest", "--test-dir", "build-agent-fresh", "--output-on-failure"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "success_exit_codes": [0],
+      "captures": ["stdout", "stderr"],
+      "requires_files": ["CMakeLists.txt", "build-agent-fresh"],
+      "error_patterns": [
+        "Errors while running CTest",
+        "Subprocess aborted",
+        "Exception",
+        "Segmentation fault",
+        "Assertion",
+        "failed",
+        "FAILED"
+      ]
+    }
+  ],
+  "loop_guidance": {
+    "compile_fix_loop": [
+      "Run an allowed compile preset first.",
+      "Read stdout and stderr from that preset.",
+      "Fix only files directly implicated by compiler errors or exception stack traces.",
+      "Run the same compile preset again after edits.",
+      "Stop after repeated identical errors or when no allowed preset applies."
+    ],
+    "cmake_stale_build_loop": [
+      "For CMake projects, start with cpp_cmake_configure, cpp_cmake_build, and cpp_ctest.",
+      "If stale object files are suspected, run cpp_cmake_clean_build before editing unrelated code.",
+      "If stale CMake cache or generated files are suspected, use cpp_cmake_configure_fresh, cpp_cmake_build_fresh, and cpp_ctest_fresh.",
+      "Do not delete build directories unless the user adds and approves an explicit preset for that action."
+    ],
+    "exception_monitor_loop": [
+      "Run an allowed exception_monitor preset when runtime exceptions are suspected.",
+      "Prefer the shortest fail-fast preset that surfaces a traceback or stack trace.",
+      "Do not invent new commands; ask the user to add a preset when coverage is missing."
+    ]
+  }
+}

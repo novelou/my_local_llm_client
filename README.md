@@ -36,9 +36,17 @@ The default config files are stored in `local_llm_clients/config/`:
 local_llm_clients/config/chat-client.config.json
 local_llm_clients/config/agent-client.config.json
 local_llm_clients/config/mcp-client.config.json
+local_llm_clients/config/allowed_tools.json
 ```
 
 Example configs are in `local_llm_clients/config/examples/`.
+
+`allowed_tools.json` defines the command presets that the local file agent may
+run through its `list_command_presets` and `run_command_preset` tools. These
+presets are intended for compile, test, and exception-monitor loops without
+allowing the model to invent arbitrary shell commands. It includes Python,
+Java/Gradle, and CMake/CTest presets; CMake also has clean-first and separate
+`build-agent-fresh` presets for stale build directory issues.
 
 ## Environment
 
