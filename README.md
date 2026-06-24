@@ -100,3 +100,18 @@ The output is:
 ```text
 dist/agent_client_textual/agent_client_textual.exe
 ```
+
+The build script also copies editable external config files next to the exe:
+
+```text
+dist/agent_client_textual/config/agent-client.config.json
+dist/agent_client_textual/config/allowed_tools.json
+```
+
+At runtime the app resolves config in this order:
+
+```text
+<exe directory>/config
+<current directory>/local_llm_clients/config
+bundled package config
+```
