@@ -307,11 +307,14 @@ def summarize_tool_result(result: Any, limit: int = 1200) -> str:
 
 def is_tool_result_failure(result: Any) -> bool:
     if isinstance(result, dict):
-        for key in ("isError", "error", "success"):
-            if key == "success" and result.get(key) is False:
-                return True
-            if key != "success" and result.get(key):
-                return True
+        if result.get("isError") is True:
+            return True
+        if result.get("success") is True:
+            return False
+        if result.get("success") is False:
+            return True
+        if result.get("error"):
+            return True
     text = tool_result_to_text(result).lower()
     failure_markers = (
         "error",
