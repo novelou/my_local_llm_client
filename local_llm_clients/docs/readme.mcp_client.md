@@ -18,15 +18,15 @@
 - LLM endpoint: `http://127.0.0.1:8081/v1/`
 - model: `local-model`
 - Unity MCP endpoint: `http://127.0.0.1:8080/mcp`
-- config: `mcp-client.config.json`
-- sessions: `.mcp-client/sessions/`
+- config: `local_llm_clients/config/mcp-client.config.json`
+- sessions: `local_llm_clients/sessions/mcp/`
 
 ## Setup
 
 設定ファイルを作成します。
 
 ```powershell
-python mcp_unity_client.py --init-config
+python mcp_client_textual.py --init-config
 ```
 
 必要に応じて `mcp-client.config.json` を編集します。設定例は `mcp-client.config.example.json` です。
@@ -56,7 +56,7 @@ $env:UNITY_MCP_URL="http://127.0.0.1:8080/mcp"
 Unity MCP server と LLM server を起動した状態で実行します。
 
 ```powershell
-python mcp_unity_client.py
+python mcp_client_textual.py
 ```
 
 ## Commands
@@ -77,8 +77,8 @@ python mcp_unity_client.py
 会話に入らず Unity MCP tool を直接確認できます。
 
 ```powershell
-python mcp_unity_client.py --list-tools
-python mcp_unity_client.py --call-tool manage_scene --arguments "{""action"":""get_active""}"
+python mcp_client_textual.py --list-tools
+python mcp_client_textual.py --call-tool manage_scene --arguments "{""action"":""get_active""}"
 ```
 
 対話中にも直接呼び出せます。
@@ -92,7 +92,7 @@ python mcp_unity_client.py --call-tool manage_scene --arguments "{""action"":""g
 長い JSON はファイルにして渡せます。
 
 ```powershell
-python mcp_unity_client.py --call-tool manage_scene --arguments @args.json
+python mcp_client_textual.py --call-tool manage_scene --arguments @args.json
 ```
 
 ## Validation And Repair

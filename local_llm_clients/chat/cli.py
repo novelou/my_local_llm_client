@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mcp_unity_client import LlamaClient, SessionStore
+from local_llm_clients import CONFIG_DIR, SESSIONS_DIR
+from local_llm_clients.common import LlamaClient, SessionStore, env
 
 
 DEFAULT_SYSTEM_PROMPT = """You are a helpful chat assistant.
@@ -45,12 +45,6 @@ class Config:
         config.llama_base_url = env("LLAMA_BASE_URL", config.llama_base_url)
         config.llama_model = env("LLAMA_MODEL", config.llama_model)
         return config
-
-
-def env(name: str, default: str) -> str:
-    value = os.environ.get(name)
-    return value if value else default
-
 
 def print_help() -> None:
     print(
@@ -178,7 +172,7 @@ class ChatCliApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Lightweight tool-free local-LLM chat client")
-    parser.add_argument("--config", type=Path, default=Path("chat-client.config.json"))
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "chat-client.config.json")
     parser.add_argument("--init-config", action="store_true", help="Write a default config file and exit.")
     args = parser.parse_args()
 
@@ -188,7 +182,7 @@ def main() -> None:
         return
 
     config = Config.load(args.config)
-    store = SessionStore(Path(".chat-client") / "sessions")
+    store = SessionStore(SESSIONS_DIR / "chat")
     ChatCliApp(config, store).start()
 
 

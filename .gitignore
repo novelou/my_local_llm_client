@@ -1,2 +1,5 @@
-/.agent-client/
-/.mcp-client/
+/.agents/
+/game/
+__pycache__/
+*.py[cod]
+local_llm_clients/sessions/

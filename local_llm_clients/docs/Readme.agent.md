@@ -16,15 +16,15 @@
 
 - LLM endpoint: `http://127.0.0.1:8081/v1/`
 - model: `local-model`
-- config: `agent-client.config.json`
-- sessions: `.agent-client/sessions/`
+- config: `local_llm_clients/config/agent-client.config.json`
+- sessions: `local_llm_clients/sessions/agent/`
 
 ## Setup
 
 設定ファイルを作成します。
 
 ```powershell
-python agent_client.py --init-config
+python agent_client_textual.py --init-config
 ```
 
 必要に応じて `agent-client.config.json` を編集します。設定例は `agent-client.config.example.json` です。
@@ -51,13 +51,13 @@ $env:LLAMA_MODEL="local-model"
 ## Start
 
 ```powershell
-python agent_client.py
+python agent_client_textual.py
 ```
 
 起動時に作業ディレクトリを指定する場合:
 
 ```powershell
-python agent_client.py --set-directory F:\path\to\project
+python agent_client_textual.py --set-directory F:\path\to\project
 ```
 
 起動後に変更する場合:
@@ -106,14 +106,14 @@ LLM が使える local tools は次の通りです。すべての path は activ
 会話に入らず tool だけ確認できます。
 
 ```powershell
-python agent_client.py --set-directory . --call-tool list_files --arguments "{""path"":""."",""max_entries"":20}"
-python agent_client.py --set-directory . --call-tool read_file --arguments "{""path"":""README.md""}"
+python agent_client_textual.py --set-directory . --call-tool list_files --arguments "{""path"":""."",""max_entries"":20}"
+python agent_client_textual.py --set-directory . --call-tool read_file --arguments "{""path"":""README.md""}"
 ```
 
 長い JSON はファイルにして渡せます。
 
 ```powershell
-python agent_client.py --call-tool write_file --arguments @args.json
+python agent_client_textual.py --call-tool write_file --arguments @args.json
 ```
 
 `args.json`:

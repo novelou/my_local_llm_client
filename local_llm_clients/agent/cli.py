@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mcp_unity_client import (
-    LlamaClient,
-    SessionStore,
+from local_llm_clients import CONFIG_DIR, SESSIONS_DIR
+from local_llm_clients.common import LlamaClient, SessionStore
+from local_llm_clients.mcp.unity import (
     normalize_tool_arguments,
     parse_json_tool_request,
     summarize_tool_result,
@@ -81,6 +81,15 @@ def env(name: str, default: str) -> str:
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def reasoning_text(message: dict[str, Any]) -> str:
+    """Return reasoning emitted by llama-server, if present."""
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def print_help() -> None:
@@ -624,6 +633,10 @@ class AgentCliApp:
                 fallback_messages = self.messages + [{"role": "system", "content": self.fallback_tool_prompt()}]
                 message = self.llama.chat(fallback_messages, [])
 
+            reasoning = reasoning_text(message)
+            if reasoning:
+                print(f"\nreason> {reasoning}")
+
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
                 self.messages.append(message)
@@ -653,7 +666,7 @@ class AgentCliApp:
             if fallback:
                 name, arguments = fallback
                 arguments = normalize_tool_arguments(arguments, name)
-                self.messages.append({"role": "assistant", "content": content})
+                self.messages.append(message)
                 print(f"tool> {name} {json.dumps(arguments, ensure_ascii=False)}")
                 if self.handle_tool_validation(name, arguments, invalid_tool_calls, None, fallback_mode=True):
                     return
@@ -662,7 +675,7 @@ class AgentCliApp:
                 self.messages.append({"role": "user", "content": "Tool result:\n" + tool_result_to_text(result)})
                 continue
 
-            self.messages.append({"role": "assistant", "content": content})
+            self.messages.append(message)
             print(f"\nassistant> {content}")
             return
         print("assistant> Tool loop limit reached. Try narrowing the request.")
@@ -804,7 +817,7 @@ class AgentCliApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Lightweight local-LLM file agent client")
-    parser.add_argument("--config", type=Path, default=Path("agent-client.config.json"))
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "agent-client.config.json")
     parser.add_argument("--init-config", action="store_true", help="Write a default config file and exit.")
     parser.add_argument("--set-directory", type=Path, help="Set the initial active working directory.")
     parser.add_argument("--call-tool", help="Call a local file tool and exit.")
@@ -819,7 +832,7 @@ def main() -> None:
     config = Config.load(args.config)
     if args.set_directory:
         config.workdir = str(args.set_directory)
-    store = SessionStore(Path(".agent-client") / "sessions")
+    store = SessionStore(SESSIONS_DIR / "agent")
 
     if args.call_tool:
         tools = LocalFileTools(Path(config.workdir))
