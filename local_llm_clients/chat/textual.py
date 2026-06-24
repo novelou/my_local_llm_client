@@ -30,12 +30,12 @@ HELP_TEXT = """### Commands
 - `/help`, `/sessions`, `/new`, `/config`, `/quit`
 - `/load SESSION_ID`
 
-Enter submits. Shift+Enter inserts a newline.
+Enter submits. Ctrl+J inserts a newline.
 """
 
 
 class PromptTextArea(TextArea):
-    """Multiline prompt where Enter submits and Shift+Enter inserts a newline."""
+    """Multiline prompt where Enter submits and modified Enter inserts a newline."""
 
     class Submitted(Message):
         def __init__(self, text: str) -> None:
@@ -43,7 +43,8 @@ class PromptTextArea(TextArea):
             super().__init__()
 
     async def on_key(self, event: events.Key) -> None:
-        if event.key == "shift+enter":
+        aliases = set(event.aliases)
+        if event.key == "shift+enter" or "shift+enter" in aliases or "newline" in aliases:
             event.prevent_default()
             event.stop()
             self.insert("\n")
@@ -93,7 +94,7 @@ class ChatTextualApp(App[None]):
         yield Static(id="status")
         yield VerticalScroll(id="conversation")
         yield PromptTextArea(
-            placeholder="Message or /command (Enter to send, Shift+Enter for newline)",
+            placeholder="Message or /command (Enter to send, Ctrl+J for newline)",
             id="prompt",
             show_line_numbers=False,
         )
@@ -170,7 +171,7 @@ class ChatTextualApp(App[None]):
                 )
             elif name == "/multiline":
                 await self.add_plain(
-                    "Multiline input is enabled. Press Shift+Enter to insert a newline.",
+                    "Multiline input is enabled. Press Ctrl+J to insert a newline.",
                     "system-message",
                     "Multiline",
                 )
