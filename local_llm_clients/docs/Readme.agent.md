@@ -107,7 +107,7 @@ LLM が使える local tools は次の通りです。すべての path は activ
 
 ```powershell
 python agent_client_textual.py --set-directory . --call-tool list_files --arguments "{""path"":""."",""max_entries"":20}"
-python agent_client_textual.py --set-directory . --call-tool read_file --arguments "{""path"":""local_llm_clients/docs/README.md""}"
+python agent_client_textual.py --set-directory . --call-tool read_file --arguments "{""path"":""README.md""}"
 ```
 
 長い JSON はファイルにして渡せます。
