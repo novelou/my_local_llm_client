@@ -23,6 +23,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+from local_llm_clients import CONFIG_DIR, SESSIONS_DIR
+
 
 DEFAULT_SYSTEM_PROMPT = """You are a local LLM agent connected to Unity through MCP tools.
 Use tools when you need to inspect or change the Unity project or scene.
@@ -1044,8 +1046,8 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(description="Lightweight llama-server to Unity MCP CLI bridge.")
-    parser.add_argument("--config", type=Path, default=Path("mcp-client.config.json"))
-    parser.add_argument("--session-dir", type=Path, default=Path(".mcp-client") / "sessions")
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "mcp-client.config.json")
+    parser.add_argument("--session-dir", type=Path, default=SESSIONS_DIR / "mcp")
     parser.add_argument("--init-config", action="store_true", help="Write a default config file and exit.")
     parser.add_argument("--list-tools", action="store_true", help="Connect to Unity MCP, list tools, and exit.")
     parser.add_argument("--call-tool", help="Connect to Unity MCP, call one tool, and exit.")

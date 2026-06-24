@@ -1,18 +1,19 @@
 # Tool-free Local LLM Chat Client
 
-`chat_client.py` is a tool-free chat CLI based on `agent_client.py`. It connects
+`chat_client_textual.py` is the root launcher for the tool-free chat Textual UI.
+The legacy CLI lives at `local_llm_clients/entrypoints/chat_client.py`. It connects
 to a local OpenAI-compatible chat-completions endpoint and saves conversation
 sessions, but does not expose file tools or MCP tools to the model.
 
 ## Setup
 
 ```powershell
-python chat_client.py --init-config
-python chat_client.py
+python chat_client_textual.py --init-config
+python chat_client_textual.py
 ```
 
-The default config file is `chat-client.config.json`. You can also copy and edit
-`chat-client.config.example.json`.
+The default config file is `local_llm_clients/config/chat-client.config.json`.
+Examples live under `local_llm_clients/config/examples/`.
 
 Environment variables `LLAMA_BASE_URL` and `LLAMA_MODEL` override the config.
 
@@ -41,4 +42,4 @@ Enter multi-line input. Finish with a line containing only .
 /quit                  Save and exit
 ```
 
-Sessions are saved under `.chat-client/sessions/`.
+Sessions are saved under `local_llm_clients/sessions/chat/`.

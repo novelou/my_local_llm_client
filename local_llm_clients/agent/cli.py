@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mcp_unity_client import (
-    LlamaClient,
-    SessionStore,
+from local_llm_clients import CONFIG_DIR, SESSIONS_DIR
+from local_llm_clients.common import LlamaClient, SessionStore
+from local_llm_clients.mcp.unity import (
     normalize_tool_arguments,
     parse_json_tool_request,
     summarize_tool_result,
@@ -817,7 +817,7 @@ class AgentCliApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Lightweight local-LLM file agent client")
-    parser.add_argument("--config", type=Path, default=Path("agent-client.config.json"))
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "agent-client.config.json")
     parser.add_argument("--init-config", action="store_true", help="Write a default config file and exit.")
     parser.add_argument("--set-directory", type=Path, help="Set the initial active working directory.")
     parser.add_argument("--call-tool", help="Call a local file tool and exit.")
@@ -832,7 +832,7 @@ def main() -> None:
     config = Config.load(args.config)
     if args.set_directory:
         config.workdir = str(args.set_directory)
-    store = SessionStore(Path(".agent-client") / "sessions")
+    store = SessionStore(SESSIONS_DIR / "agent")
 
     if args.call_tool:
         tools = LocalFileTools(Path(config.workdir))
